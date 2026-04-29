@@ -1,3 +1,5 @@
+from datetime import datetime
+
 def multiply(a: int, b: int) -> int:
     """Multiply a and b.
 
@@ -25,3 +27,11 @@ def divide(a: int, b: int) -> float:
         b: second int
     """
     return a / b
+
+def get_today() -> str:
+    """Get today's date as a string.
+
+    Returns:
+        Today's date in YYYY-MM-DD format
+    """
+    return datetime.now().strftime("%Y-%m-%d")

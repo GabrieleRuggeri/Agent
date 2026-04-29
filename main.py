@@ -1,6 +1,6 @@
 # all sorts of imports
 from langchain_openai import ChatOpenAI
-from tools.tool import add, multiply, divide
+from tools.tool import add, multiply, divide, get_today
 
 from langgraph.graph import MessagesState
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -10,15 +10,28 @@ from langgraph.prebuilt import tools_condition # this is the checker for the if 
 from langgraph.prebuilt import ToolNode
 from IPython.display import Image, display
 
+from langfuse import get_client
+from langfuse.langchain import CallbackHandler
+
 from dotenv import load_dotenv
 load_dotenv()
+
+langfuse = get_client()
+
+# Verify connection
+if langfuse.auth_check():
+    print("Langfuse client is authenticated and ready!")
+else:
+    print("Authentication failed. Please check your credentials and host.")
+
 
 class Agent:
 
     def __init__(self):
         self.llm = self._get_llm()
-        self.tools = [add, multiply, divide]
+        self.tools = [add, multiply, divide, get_today]
         self.llm_with_tools = self._bind_tools(self.tools)
+        self.langfuse_handler = CallbackHandler()
 
         # System message
         self.sys_msg = SystemMessage(content="You are a helpful assistant tasked with using search and performing arithmetic on a set of inputs.")
@@ -60,12 +73,18 @@ class Agent:
         # Display the graph
         display(Image(self.react_graph.get_graph(xray=True).draw_mermaid_png()))
 
+    def answer(self, question: str) -> str:
+        result = self.react_graph.invoke({"messages": [HumanMessage(content=question)]}, config={"callbacks": [self.langfuse_handler]}) # type: ignore
+        return result["messages"][-1].content
+
     def _test_run(self):
         messages = [HumanMessage(content="What is 2 times Brad Pitt's age?")]
-        messages = self.react_graph.invoke({"messages": messages}) # type: ignore
+        messages = self.react_graph.invoke({"messages": messages}, config={"callbacks": [self.langfuse_handler]}) # type: ignore
+        llm_response = messages["messages"][-1]
+        print(f"LLM response: {llm_response.content}")
 
 
 if __name__ == "__main__":
     agent = Agent()
-    agent.print_graph()
-    agent._test_run()
+    answer = agent.answer(input("Ask me a question: "))
+    print(f"Answer: {answer}")
