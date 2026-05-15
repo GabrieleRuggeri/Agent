@@ -16,3 +16,15 @@ def web_search(client: TavilyClient, query: str, k: int = 5) -> str:
         lines.append(f"    URL: {r.get('url', '')}")
         lines.append(f"    {r.get('content', '')}")
     return "\n".join(lines)
+
+
+def make_web_search_tool(client: TavilyClient, k: int = 5):
+    """Bind a Tavily client to web_search, returning a LangChain-compatible tool."""
+    def _tool(query: str) -> str:
+        """Search the web and return the top k results as LLM-ready text.
+
+        Args:
+            query: The search query string.
+        """
+        return web_search(client, query, k)
+    return _tool
