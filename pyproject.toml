@@ -15,4 +15,5 @@ dependencies = [
     "langgraph>=1.1.10",
     "opentelemetry-api>=1.41.1",
     "opentelemetry-sdk>=1.41.1",
+    "tavily>=1.1.0",
 ]
