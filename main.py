@@ -1,4 +1,6 @@
 # all sorts of imports
+import argparse
+from ast import arg
 import asyncio
 from typing import AsyncGenerator
 
@@ -82,19 +84,36 @@ class Agent:
         result = self.react_graph.invoke({"messages": [HumanMessage(content=question)]}, config={"callbacks": [self.langfuse_handler]}) # type: ignore
         return result["messages"][-1].content
 
-    async def stream_answer(self, question: str) -> AsyncGenerator[str, None]:
-        """Stream the final answer token by token, skipping tool-call internals."""
+    async def stream_answer(self, question: str) -> AsyncGenerator[dict, None]:
+        """Stream agent events as structured dicts.
+
+        Yielded event shapes:
+          {"type": "tool_start", "name": str, "input": dict}
+          {"type": "token",      "content": str}
+          {"type": "end"}
+        """
         async for event in self.react_graph.astream_events(
             {"messages": [HumanMessage(content=question)]},
             config={"callbacks": [self.langfuse_handler]},
             version="v2",
         ):
-            # on_chat_model_stream fires for every LLM chunk
-            if event["event"] == "on_chat_model_stream":
-                # Skip tool-call chunks (they have no text content)
+            kind = event["event"]
+
+            # Tool invocation — emit name + input args
+            if kind == "on_tool_start":
+                yield {
+                    "type": "tool_start",
+                    "name": event.get("name", "unknown_tool"),
+                    "input": event["data"].get("input", {}),
+                }
+
+            # LLM token — only forward text chunks (skip tool-call deltas)
+            elif kind == "on_chat_model_stream":
                 chunk = event["data"].get("chunk")
                 if chunk and chunk.content:
-                    yield chunk.content
+                    yield {"type": "token", "content": chunk.content}
+
+        yield {"type": "end"}
 
     def _test_run(self):
         messages = [HumanMessage(content="What is 2 times Brad Pitt's age?")]
@@ -104,12 +123,34 @@ class Agent:
 
 
 async def main():
+    response_mode = argparse.ArgumentParser(description="Choose response mode: 'full' or 'stream'")
+    response_mode.add_argument("mode", choices=["full", "stream"], help="Response mode")
+    args = response_mode.parse_args()
     agent = Agent()
     question = input("Ask me a question: ")
-    # stream response
-    async for token in agent.stream_answer(question):
-        print(token, end="", flush=True)
-    print()  # newline after streaming is done
+
+    in_answer = False  # track when we switch from tool events to answer tokens
+    if args.mode == "full":
+        answer = agent.answer(question)
+        print(f"Final answer: {answer}")
+    else:
+        async for event in agent.stream_answer(question):
+            if event["type"] == "tool_start":
+                # Print a separator before the first tool call if needed
+                name = event["name"]
+                args = ", ".join(f"{k}={v!r}" for k, v in event["input"].items())
+                print(f"\n[TOOL: {name}] {args}", flush=True)
+                in_answer = False
+
+            elif event["type"] == "token":
+                if not in_answer:
+                    # First answer token — add a blank line to separate from tool logs
+                    print()
+                    in_answer = True
+                print(event["content"], end="", flush=True)
+
+            elif event["type"] == "end":
+                print()  # final newline
 
 if __name__ == "__main__":
     asyncio.run(main())
