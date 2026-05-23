@@ -1,22 +1,22 @@
 # all sorts of imports
-from os import system
-
-from langchain_openai import ChatOpenAI
-from tools.tool import add, multiply, divide, get_today
-from tools.web import make_web_search_tool
-
-from langgraph.graph import MessagesState
-from langchain_core.messages import HumanMessage, SystemMessage
-
-from langgraph.graph import START, StateGraph
-from langgraph.prebuilt import tools_condition # this is the checker for the if you got a tool back
-from langgraph.prebuilt import ToolNode
-from langfuse import get_client
-from langfuse.langchain import CallbackHandler
-
-from clients.tavily_client import TavilyClient
+import asyncio
+from typing import AsyncGenerator
 
 from dotenv import load_dotenv
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+from langfuse import get_client
+from langfuse.langchain import CallbackHandler
+from langgraph.graph import START, MessagesState, StateGraph
+from langgraph.prebuilt import (
+    ToolNode,
+    tools_condition,  # this is the checker for the if you got a tool back
+)
+
+from clients.tavily_client import TavilyClient
+from tools.tool import add, divide, get_today, multiply
+from tools.web import make_web_search_tool
+
 load_dotenv()
 
 langfuse = get_client()
@@ -82,6 +82,20 @@ class Agent:
         result = self.react_graph.invoke({"messages": [HumanMessage(content=question)]}, config={"callbacks": [self.langfuse_handler]}) # type: ignore
         return result["messages"][-1].content
 
+    async def stream_answer(self, question: str) -> AsyncGenerator[str, None]:
+        """Stream the final answer token by token, skipping tool-call internals."""
+        async for event in self.react_graph.astream_events(
+            {"messages": [HumanMessage(content=question)]},
+            config={"callbacks": [self.langfuse_handler]},
+            version="v2",
+        ):
+            # on_chat_model_stream fires for every LLM chunk
+            if event["event"] == "on_chat_model_stream":
+                # Skip tool-call chunks (they have no text content)
+                chunk = event["data"].get("chunk")
+                if chunk and chunk.content:
+                    yield chunk.content
+
     def _test_run(self):
         messages = [HumanMessage(content="What is 2 times Brad Pitt's age?")]
         messages = self.react_graph.invoke({"messages": messages}, config={"callbacks": [self.langfuse_handler]}) # type: ignore
@@ -89,7 +103,13 @@ class Agent:
         print(f"LLM response: {llm_response.content}")
 
 
-if __name__ == "__main__":
+async def main():
     agent = Agent()
-    answer = agent.answer(input("Ask me a question: "))
-    print(f"Answer: {answer}")
+    question = input("Ask me a question: ")
+    # stream response
+    async for token in agent.stream_answer(question):
+        print(token, end="", flush=True)
+    print()  # newline after streaming is done
+
+if __name__ == "__main__":
+    asyncio.run(main())
