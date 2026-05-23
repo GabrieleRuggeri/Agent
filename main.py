@@ -1,6 +1,5 @@
 # all sorts of imports
 import argparse
-from ast import arg
 import asyncio
 from typing import AsyncGenerator
 
@@ -47,7 +46,6 @@ class Agent:
         )
         self.sys_msg = SystemMessage(content=system_prompt)
 
-        # Graph
         # Graph
         builder = StateGraph(MessagesState)
 
@@ -138,8 +136,8 @@ async def main():
             if event["type"] == "tool_start":
                 # Print a separator before the first tool call if needed
                 name = event["name"]
-                args = ", ".join(f"{k}={v!r}" for k, v in event["input"].items())
-                print(f"\n[TOOL: {name}] {args}", flush=True)
+                tool_args = ", ".join(f"{k}={v!r}" for k, v in event["input"].items())
+                print(f"\n[TOOL: {name}] {tool_args}", flush=True)
                 in_answer = False
 
             elif event["type"] == "token":
