@@ -1,4 +1,6 @@
 # all sorts of imports
+from os import system
+
 from langchain_openai import ChatOpenAI
 from tools.tool import add, multiply, divide, get_today
 from tools.web import make_web_search_tool
@@ -37,7 +39,11 @@ class Agent:
         self.langfuse_handler = CallbackHandler()
 
         # System message
-        self.sys_msg = SystemMessage(content="You are a helpful assistant tasked with using search and performing arithmetic on a set of inputs.")
+        system_prompt = (
+            "Rispondi alle domande dell'utente, servendoti dei tool a disposizione se necessario. " 
+            "In caso di richiesta informazioni, fornisci sempre le più aggiornate rispetto ad oggi."
+        )
+        self.sys_msg = SystemMessage(content=system_prompt)
 
         # Graph
         # Graph
