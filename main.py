@@ -150,5 +150,8 @@ async def main():
             elif event["type"] == "end":
                 print()  # final newline
 
+agent = Agent()
+react_graph = agent.react_graph
+
 if __name__ == "__main__":
     asyncio.run(main())
