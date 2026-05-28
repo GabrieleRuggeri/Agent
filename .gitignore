@@ -23,3 +23,6 @@ store.vectors.pckl
 
 # Ageent skills
 .agents/
+langgraph 3.json
+langgraph 2.json
+skills-lock 2.json
