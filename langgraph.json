@@ -2,5 +2,7 @@
   "dependencies": ["."],
   "graphs": {
     "my_graph": "./main.py:react_graph"
-  }
+  },
+  "python_version": "3.12",
+  "env": ".env"
 }
