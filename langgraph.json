@@ -1,0 +1,6 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "my_graph": "./main.py:react_graph"
+  }
+}
