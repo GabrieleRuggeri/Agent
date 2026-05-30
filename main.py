@@ -26,12 +26,13 @@ load_dotenv()
 
 class Agent:
 
-    def __init__(self, mcp_tools: list):
+    def __init__(self, mcp_tools: list, mcp_cleanup=None):
         self.llm = self._get_llm()
         self.tavily_client = TavilyClient()
         self.web_search_tool = make_web_search_tool(self.tavily_client)
         self.tools = [add, multiply, divide, get_today, self.web_search_tool] + mcp_tools
         self.llm_with_tools = self._bind_tools(self.tools)
+        self._mcp_cleanup = mcp_cleanup
 
         system_prompt = (
             "Rispondi alle domande dell'utente, servendoti dei tool a disposizione se necessario. "
@@ -51,11 +52,21 @@ class Agent:
     async def create(cls) -> "Agent":
         server_path = os.environ.get("MCP_SERVER_PATH", "servers/pasta_mcp/pasta_server.py")
         server_params = StdioServerParameters(command="python", args=[server_path])
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                mcp_tools = await load_mcp_tools(session)
-        return cls(mcp_tools=mcp_tools)
+
+        # Keep the MCP connection alive for the lifetime of the agent
+        stdio_ctx = stdio_client(server_params)
+        read, write = await stdio_ctx.__aenter__()
+
+        session_ctx = ClientSession(read, write)
+        session = await session_ctx.__aenter__()
+        await session.initialize()
+        mcp_tools = await load_mcp_tools(session)
+
+        async def cleanup():
+            await session_ctx.__aexit__(None, None, None)
+            await stdio_ctx.__aexit__(None, None, None)
+
+        return cls(mcp_tools=mcp_tools, mcp_cleanup=cleanup)
 
     def _get_llm(self, model: str = "gpt-4o"):
         try:
@@ -108,8 +119,9 @@ class Agent:
         print(f"LLM response: {messages['messages'][-1].content}")
 
 
-agent = Agent()
-react_graph = agent.react_graph
+async def make_graph():
+    a = await Agent.create()
+    return a.react_graph
 
 
 async def main():
@@ -118,11 +130,12 @@ async def main():
     args = parser.parse_args()
     question = input("Ask me a question: ")
 
+    a = await Agent.create()
     in_answer = False
     if args.mode == "full":
-        print(f"Final answer: {agent.answer(question)}")
+        print(f"Final answer: {a.answer(question)}")
     else:
-        async for event in agent.stream_answer(question):
+        async for event in a.stream_answer(question):
             if event["type"] == "tool_start":
                 tool_args = ", ".join(f"{k}={v!r}" for k, v in event["input"].items())
                 print(f"\n[TOOL: {event['name']}] {tool_args}", flush=True)
@@ -134,6 +147,8 @@ async def main():
                 print(event["content"], end="", flush=True)
             elif event["type"] == "end":
                 print()
+    if a._mcp_cleanup:
+        await a._mcp_cleanup()
 
 
 if __name__ == "__main__":
