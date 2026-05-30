@@ -1,4 +1,5 @@
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
@@ -7,9 +8,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
-from main import agent
+from main import Agent
 
-app = FastAPI(title="AgentAI")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.agent = await Agent.create()
+    yield
+    if app.state.agent._mcp_cleanup:
+        await app.state.agent._mcp_cleanup()
+
+
+app = FastAPI(title="AgentAI", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,7 +44,7 @@ class ChatRequest(BaseModel):
 async def chat_stream(req: ChatRequest):
     async def generate():
         try:
-            async for event in agent.stream_answer(req.message):
+            async for event in app.state.agent.stream_answer(req.message):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
@@ -51,4 +61,4 @@ async def chat_stream(req: ChatRequest):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="debug")
