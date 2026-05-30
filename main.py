@@ -50,21 +50,38 @@ class Agent:
 
     @classmethod
     async def create(cls) -> "Agent":
-        server_path = os.environ.get("MCP_SERVER_PATH", "servers/pasta_mcp/pasta_server.py")
-        server_params = StdioServerParameters(command="python", args=[server_path])
+        mcp_server_url = os.environ.get("MCP_SERVER_URL")
+        if mcp_server_url:
+            from contextlib import asynccontextmanager
+            from mcp.client.streamable_http import streamable_http_client
 
-        # Keep the MCP connection alive for the lifetime of the agent
-        stdio_ctx = stdio_client(server_params)
-        read, write = await stdio_ctx.__aenter__()
+            @asynccontextmanager
+            async def _http_session():
+                async with streamable_http_client(mcp_server_url) as (read, write, _):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        yield session
 
-        session_ctx = ClientSession(read, write)
-        session = await session_ctx.__aenter__()
-        await session.initialize()
-        mcp_tools = await load_mcp_tools(session)
+            # Enter and keep open for agent lifetime
+            _ctx = _http_session()
+            session = await _ctx.__aenter__()
+            mcp_tools = await load_mcp_tools(session)
 
-        async def cleanup():
-            await session_ctx.__aexit__(None, None, None)
-            await stdio_ctx.__aexit__(None, None, None)
+            async def cleanup():
+                await _ctx.__aexit__(None, None, None)
+        else:
+            server_path = os.environ.get("MCP_SERVER_PATH", "servers/pasta_mcp/pasta_server.py")
+            server_params = StdioServerParameters(command="python", args=[server_path])
+            stdio_ctx = stdio_client(server_params)
+            read, write = await stdio_ctx.__aenter__()
+            session_ctx = ClientSession(read, write)
+            session = await session_ctx.__aenter__()
+            await session.initialize()
+            mcp_tools = await load_mcp_tools(session)
+
+            async def cleanup():
+                await session_ctx.__aexit__(None, None, None)
+                await stdio_ctx.__aexit__(None, None, None)
 
         return cls(mcp_tools=mcp_tools, mcp_cleanup=cleanup)
 

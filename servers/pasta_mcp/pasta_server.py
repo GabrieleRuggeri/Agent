@@ -1,13 +1,19 @@
+import os
+
 from mcp.server.fastmcp import FastMCP
 
 from pasta_prompts import how_to_make_pasta, how_to_properly_choose_ingredients
 from pasta_tools import get_carbonara_recipe, get_bolognese_recipe
 from pasta_resources import get_pasta_sample_image
 
-# Initialize FastMCP server
+_host = os.environ.get("MCP_HOST", "0.0.0.0")
+_port = int(os.environ.get("MCP_PORT", "8001"))
+
 mcp = FastMCP(
-    name = "Pasta Expert",
-    instructions = "A pasta expert who can provide recipes, cooking tips, and pasta-related information",
+    name="Pasta Expert",
+    instructions="A pasta expert who can provide recipes, cooking tips, and pasta-related information",
+    host=_host,
+    port=_port,
 )
 
 # tools
@@ -21,9 +27,13 @@ mcp.resource("example://pasta_image")(get_pasta_sample_image)
 mcp.prompt("how_to_make_pasta")(how_to_make_pasta)
 mcp.prompt("how_to_properly_choose_ingredients")(how_to_properly_choose_ingredients)
 
+
 def main():
-    # Initialize and run the server
-    mcp.run(transport="stdio")
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    if transport == "streamable-http":
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":

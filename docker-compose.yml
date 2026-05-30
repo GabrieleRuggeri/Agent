@@ -1,0 +1,28 @@
+services:
+  mcp-server:
+    build:
+      context: ./servers/pasta_mcp
+    environment:
+      MCP_TRANSPORT: streamable-http
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8001"
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('localhost', 8001), timeout=3); s.close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  fastapi:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      MCP_SERVER_URL: http://mcp-server:8001/mcp
+    ports:
+      - "8000:8000"
+    depends_on:
+      mcp-server:
+        condition: service_healthy
