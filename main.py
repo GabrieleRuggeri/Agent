@@ -1,11 +1,20 @@
 import argparse
 import asyncio
+import os
 from typing import AsyncGenerator
+
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_mcp_adapters.tools import load_mcp_tools
 from langchain_openai import ChatOpenAI
 from langgraph.graph import START, MessagesState, StateGraph
+from langgraph.prebuilt import (
+    ToolNode,
+    tools_condition,  # this is the checker for the if you got a tool back
+)
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from clients.tavily_client import TavilyClient
@@ -17,11 +26,11 @@ load_dotenv()
 
 class Agent:
 
-    def __init__(self):
+    def __init__(self, mcp_tools: list):
         self.llm = self._get_llm()
         self.tavily_client = TavilyClient()
         self.web_search_tool = make_web_search_tool(self.tavily_client)
-        self.tools = [add, multiply, divide, get_today, self.web_search_tool]
+        self.tools = [add, multiply, divide, get_today, self.web_search_tool] + mcp_tools
         self.llm_with_tools = self._bind_tools(self.tools)
 
         system_prompt = (
@@ -37,6 +46,16 @@ class Agent:
         builder.add_conditional_edges("reasoner", tools_condition)
         builder.add_edge("tools", "reasoner")
         self.react_graph = builder.compile()
+
+    @classmethod
+    async def create(cls) -> "Agent":
+        server_path = os.environ.get("MCP_SERVER_PATH", "servers/pasta_mcp/pasta_server.py")
+        server_params = StdioServerParameters(command="python", args=[server_path])
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                mcp_tools = await load_mcp_tools(session)
+        return cls(mcp_tools=mcp_tools)
 
     def _get_llm(self, model: str = "gpt-4o"):
         try:
