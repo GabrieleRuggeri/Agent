@@ -17,9 +17,14 @@ wheels/
 .langgraph_api/.langgraph_checkpoint.2.pckl
 .langgraph_api/.langgraph_checkpoint.3.pckl
 .langgraph_api/.langgraph_ops.pckl
+.langgraph_api/.langgraph_ops 2.pckl
 .langgraph_api/.langgraph_retry_counter.pckl
 store.pckl
 store.vectors.pckl
 
 # Ageent skills
 .agents/
+.DS_Store
+langgraph 2.json
+langgraph 3.json
+skills-lock 2.json

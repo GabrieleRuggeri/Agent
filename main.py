@@ -1,10 +1,13 @@
 # all sorts of imports
 import argparse
 import asyncio
+import os
 from typing import AsyncGenerator
+
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_mcp_adapters.tools import load_mcp_tools
 from langchain_openai import ChatOpenAI
 from langfuse import get_client
 from langfuse.langchain import CallbackHandler
@@ -13,6 +16,8 @@ from langgraph.prebuilt import (
     ToolNode,
     tools_condition,  # this is the checker for the if you got a tool back
 )
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 from clients.tavily_client import TavilyClient
 from tools.tool import add, divide, get_today, multiply
@@ -31,17 +36,17 @@ else:
 
 class Agent:
 
-    def __init__(self):
+    def __init__(self, mcp_tools: list):
         self.llm = self._get_llm()
         self.tavily_client = TavilyClient()
         self.web_search_tool = make_web_search_tool(self.tavily_client)
-        self.tools = [add, multiply, divide, get_today, self.web_search_tool]
+        self.tools = [add, multiply, divide, get_today, self.web_search_tool] + mcp_tools
         self.llm_with_tools = self._bind_tools(self.tools)
         self.langfuse_handler = CallbackHandler()
 
         # System message
         system_prompt = (
-            "Rispondi alle domande dell'utente, servendoti dei tool a disposizione se necessario. " 
+            "Rispondi alle domande dell'utente, servendoti dei tool a disposizione se necessario. "
             "In caso di richiesta informazioni, fornisci sempre le più aggiornate rispetto ad oggi."
         )
         self.sys_msg = SystemMessage(content=system_prompt)
@@ -62,6 +67,16 @@ class Agent:
         )
         builder.add_edge("tools", "reasoner")
         self.react_graph = builder.compile()
+
+    @classmethod
+    async def create(cls) -> "Agent":
+        server_path = os.environ.get("MCP_SERVER_PATH", "servers/pasta_mcp/pasta_server.py")
+        server_params = StdioServerParameters(command="python", args=[server_path])
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                mcp_tools = await load_mcp_tools(session)
+        return cls(mcp_tools=mcp_tools)
 
     def _get_llm(self, model: str = "gpt-4o"):
         try:
@@ -124,7 +139,7 @@ async def main():
     response_mode = argparse.ArgumentParser(description="Choose response mode: 'full' or 'stream'")
     response_mode.add_argument("mode", choices=["full", "stream"], help="Response mode")
     args = response_mode.parse_args()
-    agent = Agent()
+    agent = await Agent.create()
     question = input("Ask me a question: ")
 
     in_answer = False  # track when we switch from tool events to answer tokens
@@ -150,7 +165,7 @@ async def main():
             elif event["type"] == "end":
                 print()  # final newline
 
-agent = Agent()
+agent = asyncio.get_event_loop().run_until_complete(Agent.create())
 react_graph = agent.react_graph
 
 if __name__ == "__main__":
