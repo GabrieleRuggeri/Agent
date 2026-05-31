@@ -15,7 +15,6 @@ from langgraph.prebuilt import (
 )
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from langgraph.prebuilt import ToolNode, tools_condition
 
 from clients.tavily_client import TavilyClient
 from tools.tool import add, divide, get_today, multiply
@@ -23,14 +22,23 @@ from tools.web import make_web_search_tool
 
 load_dotenv()
 
+llm = ChatOpenAI(model="gpt-4o", cache=False, temperature=0)
+tavily = TavilyClient()
+web_search_tool = make_web_search_tool(tavily)
+
 
 class Agent:
 
-    def __init__(self, mcp_tools: list, mcp_cleanup=None):
-        self.llm = self._get_llm()
-        self.tavily_client = TavilyClient()
-        self.web_search_tool = make_web_search_tool(self.tavily_client)
-        self.tools = [add, multiply, divide, get_today, self.web_search_tool] + mcp_tools
+    def __init__(
+            self,
+            llm,
+            web_tool,
+            mcp_tools: list, 
+            mcp_cleanup=None):
+
+        self.llm = llm
+        self.web_tool = web_tool
+        self.tools = [add, multiply, divide, get_today, self.web_tool] + mcp_tools
         self.llm_with_tools = self._bind_tools(self.tools)
         self._mcp_cleanup = mcp_cleanup
 
@@ -83,7 +91,7 @@ class Agent:
                 await session_ctx.__aexit__(None, None, None)
                 await stdio_ctx.__aexit__(None, None, None)
 
-        return cls(mcp_tools=mcp_tools, mcp_cleanup=cleanup)
+        return cls(llm=llm, web_tool=web_search_tool, mcp_tools=mcp_tools, mcp_cleanup=cleanup)
 
     def _get_llm(self, model: str = "gpt-4o"):
         try:
