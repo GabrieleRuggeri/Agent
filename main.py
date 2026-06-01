@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import os
 from typing import AsyncGenerator
+import logging
 
 
 from dotenv import load_dotenv
@@ -15,28 +16,37 @@ from langgraph.prebuilt import (
 )
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from langgraph.prebuilt import ToolNode, tools_condition
 
 from clients.tavily_client import TavilyClient
 from tools.tool import add, divide, get_today, multiply
 from tools.web import make_web_search_tool
 
 load_dotenv()
+logger = logging.getLogger(__name__)
+
+llm = ChatOpenAI(model="gpt-4o", cache=False, temperature=0)
+tavily = TavilyClient()
+web_search_tool = make_web_search_tool(tavily)
 
 
 class Agent:
 
-    def __init__(self, mcp_tools: list, mcp_cleanup=None):
-        self.llm = self._get_llm()
-        self.tavily_client = TavilyClient()
-        self.web_search_tool = make_web_search_tool(self.tavily_client)
-        self.tools = [add, multiply, divide, get_today, self.web_search_tool] + mcp_tools
+    def __init__(
+            self,
+            llm,
+            web_tool,
+            mcp_tools: list, 
+            mcp_cleanup=None):
+
+        self.llm = llm
+        self.web_tool = web_tool
+        self.tools = [add, multiply, divide, get_today, self.web_tool] + mcp_tools
         self.llm_with_tools = self._bind_tools(self.tools)
         self._mcp_cleanup = mcp_cleanup
 
         system_prompt = (
             "Rispondi alle domande dell'utente, servendoti dei tool a disposizione se necessario. "
-            "In caso di richiesta informazioni, fornisci sempre le più aggiornate rispetto ad oggi."
+            "In caso di richiesta informazioni, fornisci sempre le più aggiornate rispetto ad oggi: recupera la data odierna con il tool 'get_today' e, se devi rispondere a domande su eventi recenti o persone, usa il tool 'web_search' per cercare sul web."
         )
         self.sys_msg = SystemMessage(content=system_prompt)
 
@@ -51,45 +61,56 @@ class Agent:
     @classmethod
     async def create(cls) -> "Agent":
         mcp_server_url = os.environ.get("MCP_SERVER_URL")
-        if mcp_server_url:
-            from contextlib import asynccontextmanager
-            from mcp.client.streamable_http import streamable_http_client
+        mcp_tools = []
+        cleanup = None # pyright: ignore[reportAssignmentType]
+        try:
+            if mcp_server_url:
+                from contextlib import asynccontextmanager
+                from mcp.client.streamable_http import streamable_http_client
 
-            @asynccontextmanager
-            async def _http_session():
-                async with streamable_http_client(mcp_server_url) as (read, write, _):
-                    async with ClientSession(read, write) as session:
-                        await session.initialize()
-                        yield session
+                @asynccontextmanager
+                async def _http_session():
+                    async with streamable_http_client(mcp_server_url) as (read, write, _):
+                        async with ClientSession(read, write) as session:
+                            await session.initialize()
+                            yield session
 
-            # Enter and keep open for agent lifetime
-            _ctx = _http_session()
-            session = await _ctx.__aenter__()
-            mcp_tools = await load_mcp_tools(session)
+                # Enter and keep open for agent lifetime
+                try:
+                    _ctx = _http_session()
+                    session = await _ctx.__aenter__()
+                    mcp_tools = await load_mcp_tools(session)
 
-            async def cleanup():
-                await _ctx.__aexit__(None, None, None)
-        else:
-            server_path = os.environ.get("MCP_SERVER_PATH", "servers/pasta_mcp/pasta_server.py")
-            server_params = StdioServerParameters(command="python", args=[server_path])
-            stdio_ctx = stdio_client(server_params)
-            read, write = await stdio_ctx.__aenter__()
-            session_ctx = ClientSession(read, write)
-            session = await session_ctx.__aenter__()
-            await session.initialize()
-            mcp_tools = await load_mcp_tools(session)
+                    async def cleanup():
+                        await _ctx.__aexit__(None, None, None)
+                except Exception as e:
+                    logger.info(f"Error setting up HTTP MCP client: {e}")
+            else:
+                server_path = os.environ.get("MCP_SERVER_PATH", "servers/pasta_mcp/pasta_server.py")
+                server_params = StdioServerParameters(command="python", args=[server_path])
+                stdio_ctx = stdio_client(server_params)
+                try:
+                    read, write = await stdio_ctx.__aenter__()
+                    session_ctx = ClientSession(read, write)
+                    session = await session_ctx.__aenter__()
+                    await session.initialize()
+                    mcp_tools = await load_mcp_tools(session)
 
-            async def cleanup():
-                await session_ctx.__aexit__(None, None, None)
-                await stdio_ctx.__aexit__(None, None, None)
+                    async def cleanup():
+                        await session_ctx.__aexit__(None, None, None)
+                        await stdio_ctx.__aexit__(None, None, None)
+                except Exception as e:
+                    logger.info(f"Error setting up stdio MCP client: {e}")
+        except Exception as e:
+            logger.exception(f"Error setting up MCP client: {e}")
 
-        return cls(mcp_tools=mcp_tools, mcp_cleanup=cleanup)
+        return cls(llm=llm, web_tool=web_search_tool, mcp_tools=mcp_tools, mcp_cleanup=cleanup)
 
     def _get_llm(self, model: str = "gpt-4o"):
         try:
             return ChatOpenAI(model=model)
         except Exception as e:
-            print(f"Error initialising LLM: {e}")
+            logger.exception(f"Error initialising LLM: {e}")
             return None
 
     def _bind_tools(self, tools: list = []):
