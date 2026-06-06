@@ -1,0 +1,25 @@
+---
+references:
+  - "File: /server.py"
+generationTime: 2026-06-06T12:49:47.659Z
+---
+flowchart TD
+    A["Start / app startup"] --> B["lifespan(): await Agent.create()"]
+    B --> C{"Agent created?"}
+    C -->|Yes| D["FastAPI app ready"]
+    D --> E["Configure CORSMiddleware"]
+    D --> F["Register GET / -> root()"]
+    F --> G["Return HTMLResponse(frontend index.html)"]
+    D --> H["Register POST /chat/stream -> chat_stream(req)"]
+    H --> I["call generate()"]
+    I --> J{"async for event in stream_answer(req.message)"}
+    J -->|event available| K["yield SSE event data"]
+    K --> J
+    J -->|exception| L["yield SSE error event"]
+    I --> M["return StreamingResponse(...)"]
+    D --> N{"Shutdown invoked"}
+    N -->|if agent._mcp_cleanup| O["await agent._mcp_cleanup()"]
+    N -->|else| P["exit cleanly"]
+    A --> Q{"run as script?"}
+    Q -->|Yes| R["uvicorn.run(app, host, port, log_level)"]
+    Q -->|No| D
