@@ -18,6 +18,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from clients.tavily_client import TavilyClient
+from registry.mcp_registry import discover_servers, is_registry_configured
 from tools.tool import add, divide, get_today, multiply
 from tools.web import make_web_search_tool
 
@@ -59,51 +60,98 @@ class Agent:
         self.react_graph = builder.compile()
 
     @classmethod
-    async def create(cls) -> "Agent":
-        mcp_server_url = os.environ.get("MCP_SERVER_URL")
-        mcp_tools = []
-        cleanup = None # pyright: ignore[reportAssignmentType]
-        try:
-            if mcp_server_url:
-                from contextlib import asynccontextmanager
-                from mcp.client.streamable_http import streamable_http_client
+    async def _connect_http_mcp(cls, url: str) -> tuple[list, object | None]:
+        from contextlib import asynccontextmanager
 
-                @asynccontextmanager
-                async def _http_session():
-                    async with streamable_http_client(mcp_server_url) as (read, write, _):
-                        async with ClientSession(read, write) as session:
-                            await session.initialize()
-                            yield session
+        from mcp.client.streamable_http import streamable_http_client
 
-                # Enter and keep open for agent lifetime
-                try:
-                    _ctx = _http_session()
-                    session = await _ctx.__aenter__()
-                    mcp_tools = await load_mcp_tools(session)
-
-                    async def cleanup():
-                        await _ctx.__aexit__(None, None, None)
-                except Exception as e:
-                    logger.info(f"Error setting up HTTP MCP client: {e}")
-            else:
-                server_path = os.environ.get("MCP_SERVER_PATH", "servers/pasta_mcp/pasta_server.py")
-                server_params = StdioServerParameters(command="python", args=[server_path])
-                stdio_ctx = stdio_client(server_params)
-                try:
-                    read, write = await stdio_ctx.__aenter__()
-                    session_ctx = ClientSession(read, write)
-                    session = await session_ctx.__aenter__()
+        @asynccontextmanager
+        async def _http_session():
+            async with streamable_http_client(url) as (read, write, _):
+                async with ClientSession(read, write) as session:
                     await session.initialize()
-                    mcp_tools = await load_mcp_tools(session)
+                    yield session
 
-                    async def cleanup():
-                        await session_ctx.__aexit__(None, None, None)
-                        await stdio_ctx.__aexit__(None, None, None)
-                except Exception as e:
-                    logger.info(f"Error setting up stdio MCP client: {e}")
+        try:
+            ctx = _http_session()
+            session = await ctx.__aenter__()
+            tools = await load_mcp_tools(session)
+
+            async def cleanup():
+                await ctx.__aexit__(None, None, None)
+
+            return tools, cleanup
+        except Exception as e:
+            logger.info(f"Error setting up HTTP MCP client for {url}: {e}")
+            return [], None
+
+    @classmethod
+    async def _connect_stdio_mcp(cls) -> tuple[list, object | None]:
+        server_path = os.environ.get("MCP_SERVER_PATH", "servers/pasta_mcp/pasta_server.py")
+        server_params = StdioServerParameters(command="python", args=[server_path])
+        stdio_ctx = stdio_client(server_params)
+        try:
+            read, write = await stdio_ctx.__aenter__()
+            session_ctx = ClientSession(read, write)
+            session = await session_ctx.__aenter__()
+            await session.initialize()
+            tools = await load_mcp_tools(session)
+
+            async def cleanup():
+                await session_ctx.__aexit__(None, None, None)
+                await stdio_ctx.__aexit__(None, None, None)
+
+            return tools, cleanup
+        except Exception as e:
+            logger.info(f"Error setting up stdio MCP client: {e}")
+            return [], None
+
+    @classmethod
+    async def _load_mcp_tools(cls) -> tuple[list, object | None]:
+        mcp_tools: list = []
+        cleanups: list = []
+
+        try:
+            if is_registry_configured():
+                servers = await asyncio.to_thread(discover_servers)
+                for server in servers:
+                    if server.transport != "streamable-http":
+                        logger.info(
+                            "Skipping MCP server %s: unsupported transport %s",
+                            server.name,
+                            server.transport,
+                        )
+                        continue
+
+                    tools, cleanup = await cls._connect_http_mcp(server.url)
+                    mcp_tools.extend(tools)
+                    if cleanup:
+                        cleanups.append(cleanup)
+            elif os.environ.get("MCP_SERVER_URL"):
+                tools, cleanup = await cls._connect_http_mcp(os.environ["MCP_SERVER_URL"])
+                mcp_tools.extend(tools)
+                if cleanup:
+                    cleanups.append(cleanup)
+            else:
+                tools, cleanup = await cls._connect_stdio_mcp()
+                mcp_tools.extend(tools)
+                if cleanup:
+                    cleanups.append(cleanup)
         except Exception as e:
             logger.exception(f"Error setting up MCP client: {e}")
 
+        if not cleanups:
+            return mcp_tools, None
+
+        async def cleanup():
+            for fn in cleanups:
+                await fn()
+
+        return mcp_tools, cleanup
+
+    @classmethod
+    async def create(cls) -> "Agent":
+        mcp_tools, cleanup = await cls._load_mcp_tools()
         return cls(llm=llm, web_tool=web_search_tool, mcp_tools=mcp_tools, mcp_cleanup=cleanup)
 
     def _get_llm(self, model: str = "gpt-4o"):

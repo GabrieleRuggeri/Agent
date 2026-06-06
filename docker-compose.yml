@@ -1,11 +1,54 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agentic}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-agentic}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  db-migrate:
+    image: postgres:16-alpine
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-agentic}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-agentic}
+    volumes:
+      - ./migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Pipe script via stdin — avoids macOS "Resource deadlock avoided" on bind-mounted executables
+    entrypoint: ["/bin/sh", "-c", "cat /migrations/migrate.sh | /bin/sh"]
+    restart: "no"
+
   mcp-server:
     build:
-      context: ./servers/pasta_mcp
+      context: .
+      dockerfile: servers/pasta_mcp/Dockerfile
+    env_file:
+      - .env
     environment:
       MCP_TRANSPORT: streamable-http
       MCP_HOST: 0.0.0.0
       MCP_PORT: "8001"
+      MCP_SERVER_NAME: pasta-expert
+      MCP_PUBLIC_URL: http://mcp-server:8001/mcp
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: agentic
+      POSTGRES_USER: agentic
     ports:
       - "8001:8001"
     healthcheck:
@@ -13,6 +56,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
 
   fastapi:
     build:
@@ -20,9 +66,16 @@ services:
     env_file:
       - .env
     environment:
-      MCP_SERVER_URL: http://mcp-server:8001/mcp
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: agentic
+      POSTGRES_USER: agentic
     ports:
       - "8000:8000"
     depends_on:
       mcp-server:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres_data:
