@@ -1,0 +1,16 @@
+---
+  references:
+    - "File: /servers/pasta_mcp/pasta_server.py"
+  generationTime: 2026-06-06T12:48:18.045Z
+---
+architecture-beta
+    group api(cloud)[API Layer]
+    group database(cloud)[Data Layer]
+    
+    service webapp(server)[Pasta Expert MCP] in api
+    service auth(server)[Registry Manager] in api
+    service db(database)[MCP Registry] in database
+    
+    webapp:L --> R:auth
+    webapp:B --> T:db
+    auth:R --> L:db

@@ -1,0 +1,49 @@
+---
+references:
+  - "File: /main.py"
+generationTime: 2026-06-06T12:43:44.589Z
+---
+flowchart TD
+    Start(("Start")) --> Main["main()"]
+    Main --> ParseArgs["parse command-line args"]
+    ParseArgs --> ReadQuestion["read user question"]
+    ReadQuestion --> CreateAgent["Agent.create()"]
+    CreateAgent --> LoadMcp["Agent._load_mcp_tools()"]
+    LoadMcp --> CheckRegistry{"is_registry_configured()?"}
+    CheckRegistry -->|Yes| Discover["discover_servers()"]
+    Discover --> ServerLoop["for each server"]
+    ServerLoop --> CheckTransport{"transport == 'streamable-http'?"}
+    CheckTransport -->|Yes| ConnectHTTP["_connect_http_mcp(url)"]
+    CheckTransport -->|No| SkipServer["skip unsupported server"]
+    SkipServer --> ServerLoop
+    ConnectHTTP --> LoadMcpTools["load_mcp_tools(session)"]
+    CheckRegistry -->|No| CheckEnv{"MCP_SERVER_URL set?"}
+    CheckEnv -->|Yes| ConnectEnv["_connect_http_mcp(MCP_SERVER_URL)"]
+    CheckEnv -->|No| ConnectStdio["_connect_stdio_mcp()"]
+    ConnectEnv --> LoadMcpTools
+    ConnectStdio --> LoadMcpTools
+    LoadMcpTools --> ReturnTools["return tools + cleanup"]
+    ReturnTools --> InitAgent["Agent.__init__(llm, web_tool, mcp_tools)"]
+    InitAgent --> BindTools["bind tools to LLM"]
+    InitAgent --> BuildGraph["build react_graph"]
+    BuildGraph --> ModeSelect{"mode == 'full'?"}
+    ModeSelect -->|Yes| Answer["a.answer(question)"]
+    Answer --> Invoke["react_graph.invoke(...)"]
+    Invoke --> PrintFinal["print final answer"]
+    ModeSelect -->|No| StreamMode["async for event in a.stream_answer(question)"]
+    StreamMode --> EventType{"event['event'] type?"}
+    EventType -->|on_tool_start| ToolStart["print tool_start info"]
+    EventType -->|on_chat_model_stream| ChunkCheck{"chunk content?"}
+    EventType -->|other| OtherEvent["handle other events"]
+    ChunkCheck -->|Yes| TokenEvent["print streamed token"]
+    ChunkCheck -->|No| ContinueLoop["continue loop"]
+    ToolStart --> ContinueLoop
+    TokenEvent --> ContinueLoop
+    OtherEvent --> ContinueLoop
+    ContinueLoop --> StreamMode
+    StreamMode --> EndYield["yield {'type':'end'} after loop"]
+    PrintFinal --> CleanupCheck{"a._mcp_cleanup exists?"}
+    EndYield --> CleanupCheck
+    CleanupCheck -->|Yes| Cleanup["await a._mcp_cleanup()"]
+    CleanupCheck -->|No| Exit(("Exit"))
+    Cleanup --> Exit(("Exit"))
