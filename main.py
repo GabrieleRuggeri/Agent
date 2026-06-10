@@ -1,21 +1,25 @@
 import argparse
 import asyncio
 import os
+import sys
+from pathlib import Path
 from typing import AsyncGenerator
 import logging
 
 
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, trim_messages
+from langchain_core.runnables import RunnableConfig
 from langchain_mcp_adapters.tools import load_mcp_tools
 from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.prebuilt import (
     ToolNode,
     tools_condition,  # this is the checker for the if you got a tool back
 )
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp.client.stdio import get_default_environment, stdio_client
 
 from clients.tavily_client import TavilyClient
 from registry.mcp_registry import discover_servers, is_registry_configured
@@ -28,6 +32,9 @@ logger = logging.getLogger(__name__)
 llm = ChatOpenAI(model="gpt-4o", cache=False, temperature=0)
 tavily = TavilyClient()
 web_search_tool = make_web_search_tool(tavily)
+
+# How many recent messages (human/AI/tool) the reasoner keeps as context
+MEMORY_WINDOW = int(os.environ.get("AGENT_MEMORY_WINDOW", "20"))
 
 
 class Agent:
@@ -57,7 +64,10 @@ class Agent:
         builder.add_edge(START, "reasoner")
         builder.add_conditional_edges("reasoner", tools_condition)
         builder.add_edge("tools", "reasoner")
-        self.react_graph = builder.compile()
+        # The checkpointer persists conversation state per thread_id, so each
+        # session keeps its own history across requests without the client
+        # having to send it back
+        self.react_graph = builder.compile(checkpointer=InMemorySaver())
 
     @classmethod
     async def _connect_http_mcp(cls, url: str) -> tuple[list, object | None]:
@@ -88,7 +98,12 @@ class Agent:
     @classmethod
     async def _connect_stdio_mcp(cls) -> tuple[list, object | None]:
         server_path = os.environ.get("MCP_SERVER_PATH", "servers/pasta_mcp/pasta_server.py")
-        server_params = StdioServerParameters(command="python", args=[server_path])
+        # PYTHONPATH must include the project root: pasta_server imports `registry`,
+        # which is otherwise not visible when the script runs from servers/pasta_mcp
+        # (in Docker this is handled by ENV PYTHONPATH=/app in the Dockerfile)
+        env = get_default_environment()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parent)
+        server_params = StdioServerParameters(command=sys.executable, args=[server_path], env=env)
         stdio_ctx = stdio_client(server_params)
         try:
             read, write = await stdio_ctx.__aenter__()
@@ -165,13 +180,30 @@ class Agent:
         return self.llm.bind_tools(tools)  # type: ignore
 
     def reasoner(self, state: MessagesState):
-        return {"messages": [self.llm_with_tools.invoke([self.sys_msg] + state["messages"])]}
+        # Keep only the most recent messages so the question is contextualised
+        # on the latest interactions without the prompt growing unbounded
+        context = trim_messages(
+            state["messages"],
+            max_tokens=MEMORY_WINDOW,
+            token_counter=len,
+            strategy="last",
+            start_on="human",
+            include_system=False,
+        )
+        return {"messages": [self.llm_with_tools.invoke([self.sys_msg] + context)]}
 
-    def answer(self, question: str) -> str:
-        result = self.react_graph.invoke({"messages": [HumanMessage(content=question)]})  # type: ignore
+    @staticmethod
+    def _thread_config(session_id: str) -> RunnableConfig:
+        return {"configurable": {"thread_id": session_id}}
+
+    def answer(self, question: str, session_id: str = "default") -> str:
+        result = self.react_graph.invoke(
+            {"messages": [HumanMessage(content=question)]},  # type: ignore
+            config=self._thread_config(session_id),
+        )
         return result["messages"][-1].content
 
-    async def stream_answer(self, question: str) -> AsyncGenerator[dict, None]:
+    async def stream_answer(self, question: str, session_id: str = "default") -> AsyncGenerator[dict, None]:
         """Stream agent events as structured dicts.
 
         Yielded shapes:
@@ -181,6 +213,7 @@ class Agent:
         """
         async for event in self.react_graph.astream_events(
             {"messages": [HumanMessage(content=question)]},
+            config=self._thread_config(session_id),
             version="v2",
         ):
             kind = event["event"]
@@ -201,7 +234,10 @@ class Agent:
 
     def _test_run(self):
         messages = [HumanMessage(content="What is 2 times Brad Pitt's age?")]
-        messages = self.react_graph.invoke({"messages": messages})  # type: ignore
+        messages = self.react_graph.invoke(
+            {"messages": messages},  # type: ignore
+            config=self._thread_config("test"),
+        )
         print(f"LLM response: {messages['messages'][-1].content}")
 
 

@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
@@ -41,15 +41,21 @@ class ChatRequest(BaseModel):
 
 
 @app.post("/chat/stream")
-async def chat_stream(req: ChatRequest):
+async def chat_stream(req: ChatRequest, request: Request):
+    # Conversation memory is keyed by a server-assigned session cookie; when
+    # the browser blocks cookies (e.g. embedded webviews treat them as
+    # third-party) fall back to the client address so memory still works
+    client_host = request.client.host if request.client else "unknown"
+    session_id = request.cookies.get("session_id") or f"ip-{client_host}"
+
     async def generate():
         try:
-            async for event in app.state.agent.stream_answer(req.message):
+            async for event in app.state.agent.stream_answer(req.message, session_id=session_id):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
-    return StreamingResponse(
+    response = StreamingResponse(
         generate(),
         media_type="text/event-stream",
         headers={
@@ -58,6 +64,8 @@ async def chat_stream(req: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+    response.set_cookie("session_id", session_id, httponly=True, samesite="lax")
+    return response
 
 
 if __name__ == "__main__":
